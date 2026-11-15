@@ -55,6 +55,7 @@ aws sts get-caller-identity   # Account 000000000000
 
 ## Docs
 
+- [Full documentation in one file](https://xsavikx.github.io/aws-emulator-docker/llms-full.txt): the image README, the examples README, the action README, the FAQ and the latest release notes
 - [Website](https://xsavikx.github.io/aws-emulator-docker/): quick start, facts, examples, action, tags, verification, FAQ, release notes
 - [Source repository](https://github.com/xSAVIKx/aws-emulator-docker): Dockerfiles, CI, tests
 - [Examples](https://github.com/xSAVIKx/aws-emulator-docker/tree/main/examples): Python pytest, TypeScript Vitest, Java JUnit 5, Go, C# xUnit, Rust

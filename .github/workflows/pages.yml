@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "README.md"
+      - "examples/README.md"
+      - "scripts/build-llms-full.py"
+      - "scripts/render-releases.py"
       - ".github/workflows/pages.yml"
   # The release workflow calls this workflow after each publish.
   workflow_call:
@@ -44,6 +48,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/render-releases.py "$GITHUB_REPOSITORY" site/index.html
+
+      - name: Build llms-full.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/build-llms-full.py "$GITHUB_REPOSITORY" site/llms-full.txt
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
