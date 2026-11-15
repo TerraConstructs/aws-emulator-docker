@@ -6,8 +6,15 @@ AWS does not publish a prebuilt image. This project builds one from the pinned u
 
 ## Images
 
-- `ghcr.io/xsavikx/aws-emulator`, `docker.io/xsavikx/aws-emulator`, `quay.io/xsavikx/aws-emulator`
-- Tags: `latest`, `lts`, `__VERSION__` (package version), `__VERSION_SHORT__` (emulator version), `1.0`, `1`, immutable build tags `__VERSION__-<yyyymmdd>.<run>`; Debian variant with the `-debian` suffix and `debian`; distroless variant (no shell) with the `-distroless` suffix and `distroless`.
+The same tags and digests are on three registries:
+
+```sh
+docker pull ghcr.io/xsavikx/aws-emulator
+docker pull docker.io/xsavikx/aws-emulator
+docker pull quay.io/xsavikx/aws-emulator
+```
+
+Tags: `latest`, `lts`, `__VERSION__` (package version), `__VERSION_SHORT__` (emulator version), `1.0`, `1`, immutable build tags `__VERSION__-<yyyymmdd>.<run>`; Debian variant with the `-debian` suffix and `debian`; distroless variant (no shell) with the `-distroless` suffix and `distroless`.
 
 ## Quick start
 
@@ -38,6 +45,8 @@ aws sts get-caller-identity   # Account 000000000000
 - AWS SDK for JavaScript v3: set `useQueueUrlAsEndpoint: false` on SQSClient, or SQS requests go to real AWS.
 - Other containers cannot reach the emulator by service name: the certificate names only localhost, 127.0.0.1 and ::1.
 - All state is in memory. Give the container 2 GiB.
+- Image size (linux/amd64, uncompressed): about 1.49 GB (Amazon Linux), 1.48 GB (Debian), 1.39 GB (distroless). The image from the Dockerfile in the AWS guide is about 1.86 GB.
+- The signatures prove where the binary and the image come from. They do not prove that the emulator code is free of defects. Use it for tests only, without real AWS credentials.
 - Verify the signature: `cosign verify ghcr.io/xsavikx/aws-emulator:latest --certificate-identity 'https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main' --certificate-oidc-issuer https://token.actions.githubusercontent.com` (cosign v3 or later).
 
 ## GitHub Action
