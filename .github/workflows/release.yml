@@ -461,15 +461,36 @@ jobs:
           {
             echo "AWS Emulator **$UPSTREAM** (emulator \`$VERSION\`), built $CREATED."
             echo
-            echo "### Images"
+            echo "### Pull"
             echo
-            echo "| Variant | Pull | Immutable tag | Digest |"
-            echo "|---|---|---|---|"
-            echo "| Amazon Linux | \`docker pull ghcr.io/xsavikx/aws-emulator:$UPSTREAM\` | \`$BUILD_TAG\` | \`$d_al\` |"
-            echo "| Debian | \`docker pull ghcr.io/xsavikx/aws-emulator:$UPSTREAM-debian\` | \`$BUILD_TAG-debian\` | \`$d_deb\` |"
-            echo "| Distroless | \`docker pull ghcr.io/xsavikx/aws-emulator:$UPSTREAM-distroless\` | \`$BUILD_TAG-distroless\` | \`$d_dl\` |"
+            echo "Each image is on three registries, for \`linux/amd64\` and \`linux/arm64\`."
             echo
-            echo "The same tags are on \`docker.io/xsavikx/aws-emulator\` and \`quay.io/xsavikx/aws-emulator\`. Platforms: \`linux/amd64\`, \`linux/arm64\`."
+            for variant in "Amazon Linux (default)|" "Debian|-debian" "Distroless|-distroless"; do
+              name="${variant%%|*}"; suffix="${variant#*|}"
+              echo "$name:"
+              echo
+              echo '```sh'
+              for registry in ghcr.io docker.io quay.io; do
+                echo "docker pull $registry/xsavikx/aws-emulator:$UPSTREAM$suffix"
+              done
+              echo '```'
+              echo
+            done
+            echo "### Pin"
+            echo
+            echo "The build tag never moves. The digest is the same on all three registries."
+            echo
+            echo '```sh'
+            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_al   # Amazon Linux"
+            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_deb   # Debian"
+            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_dl   # Distroless"
+            echo '```'
+            echo
+            echo "| Variant | Build tag | Digest |"
+            echo "|---|---|---|"
+            echo "| Amazon Linux | \`$BUILD_TAG\` | \`$d_al\` |"
+            echo "| Debian | \`$BUILD_TAG-debian\` | \`$d_deb\` |"
+            echo "| Distroless | \`$BUILD_TAG-distroless\` | \`$d_dl\` |"
             echo
             echo "### Upstream changes"
             echo

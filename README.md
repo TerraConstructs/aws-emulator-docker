@@ -67,11 +67,26 @@ checks the AWS signature on each package, tests each image, and signs it. See
 
 ## Images
 
-| Registry | Image |
-|---|---|
-| GitHub Container Registry | `ghcr.io/xsavikx/aws-emulator` |
-| Docker Hub | `docker.io/xsavikx/aws-emulator` |
-| Quay.io | `quay.io/xsavikx/aws-emulator` |
+GitHub Container Registry:
+
+```sh
+docker pull ghcr.io/xsavikx/aws-emulator
+```
+
+Docker Hub:
+
+```sh
+docker pull docker.io/xsavikx/aws-emulator
+```
+
+Quay.io:
+
+```sh
+docker pull quay.io/xsavikx/aws-emulator
+```
+
+For the Debian or distroless variant, add the `:debian` or `:distroless` tag. All tags and
+digests are the same on the three registries.
 
 Platforms: `linux/amd64` and `linux/arm64`. Docker Desktop on macOS (Intel and Apple
 silicon) and on Windows (x64 and Arm, WSL 2 backend) runs these Linux images. Docker,
