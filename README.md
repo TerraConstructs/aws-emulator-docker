@@ -47,9 +47,10 @@ Windows, SDKs and Compose, see [Run it step by step](#run-it-step-by-step).
 ### Compared with the image from the AWS guide
 
 The [AWS guide](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-docker.html)
-tells you to build the image yourself. This project gives you a built image that is also smaller:
+tells you to build the image yourself. This project gives you a built image that is also smaller.
+The sizes are for `linux/amd64`, uncompressed:
 
-| Image (`linux/amd64`, uncompressed) | Size |
+| Image | Size |
 |---|---|
 | Built with the Dockerfile from the AWS guide | 1.86 GB |
 | This project, Amazon Linux (default) | 1.49 GB |
