@@ -95,7 +95,7 @@ jobs:
 
       - name: Run AWS Emulator
         id: emulator
-        uses: xSAVIKx/run-aws-emulator@7a51c40fa9285e94bf328e4e44ebbde07bddaaac # v1.1.0
+        uses: xSAVIKx/run-aws-emulator@f26496537177fd799f424012f533862a6569d1bd # v1.1.1
         with:
           image: ${{ inputs.image || 'ghcr.io/xsavikx/aws-emulator:latest' }}
 

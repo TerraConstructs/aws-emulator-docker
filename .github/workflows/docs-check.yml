@@ -1,0 +1,64 @@
+name: Docs check
+
+on:
+  push:
+    branches: [main]
+    paths: &docs_paths
+      - "README.md"
+      - "examples/**/README.md"
+      - "site/index.html"
+      - "site/llms.txt"
+      - ".github/actions/aws-emulator/**"
+      - ".github/workflows/examples.yml"
+      - ".github/workflows/docs-check.yml"
+      - "scripts/check-doc-versions.py"
+  pull_request:
+    paths: *docs_paths
+  # New releases of the referenced actions make the docs old without a change here.
+  schedule:
+    - cron: "37 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: Action and tool versions in the docs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: xSAVIKx/run-aws-emulator
+          path: run-aws-emulator
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/check-doc-versions.py README.md examples/README.md examples/*/README.md \
+            site/index.html site/llms.txt run-aws-emulator/README.md run-aws-emulator/llms.txt
+
+  script-copy:
+    name: Local start-emulator.sh equals the pinned action release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha=$(grep -oE 'xSAVIKx/run-aws-emulator@[0-9a-f]{40}' .github/workflows/examples.yml | head -1 | cut -d@ -f2)
+          [ -n "$sha" ] || { echo "::error::No pinned run-aws-emulator commit in examples.yml"; exit 1; }
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/xSAVIKx/run-aws-emulator/contents/start-emulator.sh?ref=$sha" > /tmp/upstream.sh
+          if ! cmp -s /tmp/upstream.sh .github/actions/aws-emulator/start-emulator.sh; then
+            echo "::error file=.github/actions/aws-emulator/start-emulator.sh::Not the same as start-emulator.sh of xSAVIKx/run-aws-emulator at $sha. Copy that file here."
+            diff -u /tmp/upstream.sh .github/actions/aws-emulator/start-emulator.sh | head -40
+            exit 1
+          fi
+          echo "The copy equals run-aws-emulator at $sha."

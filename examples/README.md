@@ -44,7 +44,7 @@ port, and `EMULATOR_IMAGE` to test another image.
 To keep one emulator for many runs:
 
 ```sh
-eval "$(.github/actions/aws-emulator/start-emulator.sh)"
+out="$(.github/actions/aws-emulator/start-emulator.sh)" && eval "$out"
 examples/python/run-tests.sh
 .github/actions/aws-emulator/start-emulator.sh --stop
 ```
