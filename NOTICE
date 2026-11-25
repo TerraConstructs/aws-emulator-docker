@@ -7,3 +7,9 @@ its vendor/ directory under the Apache License 2.0.
 
 This project is not affiliated with or endorsed by Amazon Web Services.
 "AWS" and "Amazon Web Services" are trademarks of Amazon.com, Inc. or its affiliates.
+
+Modifications Copyright 2026 TerraConstructs contributors.
+This repository is derived from https://github.com/xSAVIKx/aws-emulator-docker
+(Apache License 2.0). Changes: build and publish the Amazon Linux variant only,
+to ghcr.io/terraconstructs/aws-emulator; remove the Debian and distroless
+variants, examples, testcontainers modules and project site.

@@ -1,11 +1,18 @@
 name: Build and publish
 
+# Builds the Amazon Linux image for linux/amd64 and linux/arm64, publishes it to GHCR,
+# signs it with cosign (keyless) and attests its build provenance.
+#
+# Based on xSAVIKx/aws-emulator-docker. Changes for TerraConstructs: GHCR only (no
+# Docker Hub or Quay), the Amazon Linux variant only, no hourly upstream schedule (a
+# new emulator version is published on purpose, by push or workflow_dispatch).
+
 on:
   push:
     branches: [main]
     # Publish only when a file that goes into the image or its tests changes.
     paths: &image_paths
-      - "Dockerfile*"
+      - "Dockerfile"
       - ".dockerignore"
       - "healthcheck.sh"
       - "healthcheck/**"
@@ -15,10 +22,12 @@ on:
       - ".github/workflows/release.yml"
   pull_request:
     paths: *image_paths
-  schedule:
-    # Check for a new AWS Emulator release every hour.
-    - cron: "17 * * * *"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream package version, for example 1.0.598.1 (default: the newest downloadable)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -29,7 +38,7 @@ concurrency:
 
 env:
   IMAGE_NAME: aws-emulator
-  GHCR_IMAGE: ghcr.io/xsavikx/aws-emulator
+  GHCR_IMAGE: ghcr.io/terraconstructs/aws-emulator
   DOWNLOAD_BASE: https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS
 
 jobs:
@@ -41,53 +50,49 @@ jobs:
       upstream_version: ${{ steps.v.outputs.upstream_version }}
       rpm_sha_amd64: ${{ steps.sha.outputs.rpm_sha_amd64 }}
       rpm_sha_arm64: ${{ steps.sha.outputs.rpm_sha_arm64 }}
-      deb_sha_amd64: ${{ steps.sha.outputs.deb_sha_amd64 }}
-      deb_sha_arm64: ${{ steps.sha.outputs.deb_sha_arm64 }}
       publish: ${{ steps.publish.outputs.publish }}
       created: ${{ steps.v.outputs.created }}
       build_tag: ${{ steps.v.outputs.build_tag }}
-      base_name_amazonlinux: ${{ steps.base.outputs.name_amazonlinux }}
-      base_digest_amazonlinux: ${{ steps.base.outputs.digest_amazonlinux }}
-      base_name_debian: ${{ steps.base.outputs.name_debian }}
-      base_digest_debian: ${{ steps.base.outputs.digest_debian }}
-      base_name_distroless: ${{ steps.base.outputs.name_distroless }}
-      base_digest_distroless: ${{ steps.base.outputs.digest_distroless }}
+      base_name: ${{ steps.base.outputs.name }}
+      base_digest: ${{ steps.base.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
 
-      - name: Read base images from the Dockerfiles
+      - name: Read the base image from the Dockerfile
         id: base
         shell: bash
         run: |
           set -euo pipefail
-          for pair in amazonlinux:Dockerfile debian:Dockerfile.debian distroless:Dockerfile.distroless; do
-            v=${pair%%:*}; f=${pair#*:}
-            ref=$(sed -n 's/^ARG BASE_IMAGE=//p' "$f")
-            echo "name_$v=${ref%@*}" | tee -a "$GITHUB_OUTPUT"
-            echo "digest_$v=${ref#*@}" | tee -a "$GITHUB_OUTPUT"
-          done
+          ref=$(sed -n 's/^ARG BASE_IMAGE=//p' Dockerfile)
+          echo "name=${ref%@*}" | tee -a "$GITHUB_OUTPUT"
+          echo "digest=${ref#*@}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Resolve upstream version
         id: v
         shell: bash
+        env:
+          REQUESTED: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # Small requests only. The packages are downloaded only when a build is due.
-          # Take the newest valid version whose four packages are downloadable.
+          if [ -n "${REQUESTED:-}" ]; then
+            candidates="$REQUESTED"
+          else
+            candidates=$(curl -fsSL --retry 5 "$DOWNLOAD_BASE/versions.json" | jq -r '.versions[].version' | sort -Vr | head -5)
+          fi
+          # Take the newest valid version whose two packages are downloadable.
           upstream=""
-          for cand in $(curl -fsSL --retry 5 "$DOWNLOAD_BASE/versions.json" | jq -r '.versions[].version' | sort -Vr | head -5); do
+          for cand in $candidates; do
             [[ "$cand" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::warning::Ignoring invalid version '$cand'"; continue; }
             v="${cand%.*}-${cand##*.}"; ok=true
-            for f in "aws-emulator-$v-x86_64.rpm" "aws-emulator-$v-aarch64.rpm" "aws-emulator_${v}_amd64.deb" "aws-emulator_${v}_arm64.deb"; do
+            for f in "aws-emulator-$v-x86_64.rpm" "aws-emulator-$v-aarch64.rpm"; do
               code=$(curl -s -o /dev/null -I -w '%{http_code}' --retry 3 "$DOWNLOAD_BASE/$f")
               [ "$code" = 200 ] || { echo "::notice::$cand: $f returned $code"; ok=false; break; }
             done
             if [ "$ok" = true ]; then upstream="$cand"; break; fi
           done
-          [ -n "$upstream" ] || { echo "::error::No downloadable version in versions.json"; exit 1; }
+          [ -n "$upstream" ] || { echo "::error::No downloadable version"; exit 1; }
           # Package version is like 1.0.322.1. The emulator reports 1.0.322.
           echo "upstream_version=$upstream" | tee -a "$GITHUB_OUTPUT"
           echo "version=$(cut -d. -f1-3 <<<"$upstream")" | tee -a "$GITHUB_OUTPUT"
@@ -99,27 +104,11 @@ jobs:
         id: publish
         shell: bash
         env:
-          UPSTREAM: ${{ steps.v.outputs.upstream_version }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           publish=false
-          case "$EVENT" in
-            push|workflow_dispatch) publish=true ;;
-            schedule)
-              for tag in "$UPSTREAM" "$UPSTREAM-debian" "$UPSTREAM-distroless"; do
-                docker buildx imagetools inspect "$GHCR_IMAGE:$tag" >/dev/null 2>&1 || { echo "$tag is missing."; publish=true; }
-              done
-              # A queued push can be replaced by a schedule run. Publish when image
-              # files changed since the commit that built the current :latest.
-              rev=$(docker buildx imagetools inspect --raw "$GHCR_IMAGE:latest" 2>/dev/null \
-                | jq -r '.annotations["org.opencontainers.image.revision"] // empty' || true)
-              if [ -n "$rev" ] && git cat-file -e "$rev^{commit}" 2>/dev/null; then
-                if ! git diff --quiet "$rev" HEAD -- 'Dockerfile*' .dockerignore healthcheck.sh healthcheck entrypoint keys tests .github/workflows/release.yml; then
-                  echo "Image files changed since $rev."; publish=true
-                fi
-              fi ;;
-          esac
+          case "$EVENT" in push|workflow_dispatch) publish=true ;; esac
           # Only the main branch publishes. Pull requests and other branches only build and test.
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then publish=false; fi
           echo "publish=$publish" | tee -a "$GITHUB_OUTPUT"
@@ -135,8 +124,7 @@ jobs:
           v="${UPSTREAM%.*}-${UPSTREAM##*.}"
           sha() { curl -fsSL --retry 5 --retry-all-errors "$DOWNLOAD_BASE/$1" | sha256sum | cut -d' ' -f1; }
           printf '### Upstream AWS Emulator %s\n| file | sha256 |\n|---|---|\n' "$UPSTREAM" >> "$GITHUB_STEP_SUMMARY"
-          for spec in rpm_sha_amd64:aws-emulator-$v-x86_64.rpm rpm_sha_arm64:aws-emulator-$v-aarch64.rpm \
-                      deb_sha_amd64:aws-emulator_${v}_amd64.deb deb_sha_arm64:aws-emulator_${v}_arm64.deb; do
+          for spec in rpm_sha_amd64:aws-emulator-$v-x86_64.rpm rpm_sha_arm64:aws-emulator-$v-aarch64.rpm; do
             key=${spec%%:*}; file=${spec#*:}
             h=$(sha "$file")
             echo "$key=$h" >> "$GITHUB_OUTPUT"
@@ -144,28 +132,17 @@ jobs:
           done
 
   build:
-    name: Build ${{ matrix.variant }} ${{ matrix.platform }}
+    name: Build ${{ matrix.platform }}
     needs: resolve
     if: needs.resolve.outputs.publish == 'true' || github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        variant: [amazonlinux, debian, distroless]
-        platform: [linux/amd64, linux/arm64]
         include:
           - platform: linux/amd64
             runner: ubuntu-24.04
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
-          - variant: amazonlinux
-            dockerfile: Dockerfile
-            title: AWS Emulator
-          - variant: debian
-            dockerfile: Dockerfile.debian
-            title: AWS Emulator (Debian)
-          - variant: distroless
-            dockerfile: Dockerfile.distroless
-            title: AWS Emulator (distroless)
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -173,10 +150,9 @@ jobs:
     steps:
       - name: Prepare
         shell: bash
-        run: echo "PLATFORM_PAIR=${VARIANT}-${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
         env:
           PLATFORM: ${{ matrix.platform }}
-          VARIANT: ${{ matrix.variant }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -190,16 +166,15 @@ jobs:
         with:
           images: ${{ env.GHCR_IMAGE }}
           labels: &labels |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.description=Multi-arch container image of the AWS Emulator, a local emulator of the AWS APIs. Unofficial community build.
-            org.opencontainers.image.authors=Yurii Serhiichuk <yurii@serhiichuk.dev>
-            org.opencontainers.image.vendor=Yurii Serhiichuk
+            org.opencontainers.image.title=AWS Emulator (TerraConstructs)
+            org.opencontainers.image.description=Multi-arch container image of the AWS Emulator for TerraConstructs integration tests. Based on xSAVIKx/aws-emulator-docker. Unofficial build.
+            org.opencontainers.image.vendor=TerraConstructs
             org.opencontainers.image.version=${{ needs.resolve.outputs.upstream_version }}
             org.opencontainers.image.created=${{ needs.resolve.outputs.created }}
             org.opencontainers.image.licenses=Apache-2.0 AND CC0-1.0
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}#readme
-            org.opencontainers.image.base.name=${{ needs.resolve.outputs[format('base_name_{0}', matrix.variant)] }}
-            org.opencontainers.image.base.digest=${{ needs.resolve.outputs[format('base_digest_{0}', matrix.variant)] }}
+            org.opencontainers.image.base.name=${{ needs.resolve.outputs.base_name }}
+            org.opencontainers.image.base.digest=${{ needs.resolve.outputs.base_digest }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -214,13 +189,11 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:ci
           labels: ${{ steps.meta.outputs.labels }}
-          file: ${{ matrix.dockerfile }}
+          file: Dockerfile
           build-args: |
             EMULATOR_VERSION=${{ needs.resolve.outputs.upstream_version }}
             RPM_SHA256_AMD64=${{ needs.resolve.outputs.rpm_sha_amd64 }}
             RPM_SHA256_ARM64=${{ needs.resolve.outputs.rpm_sha_arm64 }}
-            DEB_SHA256_AMD64=${{ needs.resolve.outputs.deb_sha_amd64 }}
-            DEB_SHA256_ARM64=${{ needs.resolve.outputs.deb_sha_arm64 }}
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope={0}', env.PLATFORM_PAIR) || '' }}
 
@@ -249,13 +222,11 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          file: ${{ matrix.dockerfile }}
+          file: Dockerfile
           build-args: |
             EMULATOR_VERSION=${{ needs.resolve.outputs.upstream_version }}
             RPM_SHA256_AMD64=${{ needs.resolve.outputs.rpm_sha_amd64 }}
             RPM_SHA256_ARM64=${{ needs.resolve.outputs.rpm_sha_arm64 }}
-            DEB_SHA256_AMD64=${{ needs.resolve.outputs.deb_sha_amd64 }}
-            DEB_SHA256_ARM64=${{ needs.resolve.outputs.deb_sha_arm64 }}
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
@@ -280,37 +251,22 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish ${{ matrix.variant }} manifest
+    name: Publish manifest
     needs: [resolve, build]
     if: needs.resolve.outputs.publish == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: amazonlinux
-            suffix: ""
-            title: AWS Emulator
-          - variant: debian
-            suffix: "-debian"
-            title: AWS Emulator (Debian)
-          - variant: distroless
-            suffix: "-distroless"
-            title: AWS Emulator (distroless)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
       id-token: write        # cosign keyless signing and attestations
       attestations: write
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-      SUFFIX: ${{ matrix.suffix }}
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/digests
-          pattern: digests-${{ matrix.variant }}-*
+          pattern: digests-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -324,60 +280,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to Quay.io
-        if: env.QUAY_USERNAME != ''
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_TOKEN }}
-
-      - name: Image list
-        id: images
-        shell: bash
-        env:
-          DH_NS: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
-          QUAY_NS: ${{ vars.QUAY_NAMESPACE || secrets.QUAY_USERNAME }}
-        run: |
-          {
-            echo "list<<EOF"
-            echo "$GHCR_IMAGE"
-            [ -n "$DOCKERHUB_USERNAME" ] && echo "docker.io/$DH_NS/$IMAGE_NAME"
-            [ -n "$QUAY_USERNAME" ] && echo "quay.io/$QUAY_NS/$IMAGE_NAME"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
-          images: ${{ steps.images.outputs.list }}
+          images: ${{ env.GHCR_IMAGE }}
           flavor: |
             latest=false
-            suffix=${{ matrix.suffix }}
           tags: |
-            type=raw,value=${{ needs.resolve.outputs.build_tag }}${{ github.run_attempt > 1 && format('.{0}', github.run_attempt) || '' }},enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=raw,value=${{ needs.resolve.outputs.upstream_version }},enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=raw,value=${{ needs.resolve.outputs.version }},enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.version }},enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=semver,pattern={{major}},value=${{ needs.resolve.outputs.version }},enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=raw,value=lts,enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name != 'push' }}
+            type=raw,value=${{ needs.resolve.outputs.build_tag }}${{ github.run_attempt > 1 && format('.{0}', github.run_attempt) || '' }}
+            type=raw,value=${{ needs.resolve.outputs.upstream_version }}
+            type=raw,value=${{ needs.resolve.outputs.version }}
+            type=raw,value=latest
             type=sha,format=short,prefix=sha-
-            type=raw,value=debian,suffix=,enable=${{ matrix.variant == 'debian' && (github.ref == 'refs/heads/main' || github.event_name != 'push') }}
-            type=raw,value=distroless,suffix=,enable=${{ matrix.variant == 'distroless' && (github.ref == 'refs/heads/main' || github.event_name != 'push') }}
           labels: *labels
 
-      - name: Create and push manifest lists
+      - name: Create and push the manifest list
         shell: bash
         working-directory: ${{ runner.temp }}/digests
         env:
@@ -395,24 +315,17 @@ jobs:
       - name: Inspect
         id: digest
         shell: bash
-        env:
-          VERSION: ${{ needs.resolve.outputs.upstream_version }}
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "$GHCR_IMAGE:sha-${GITHUB_SHA::7}${SUFFIX}"
-          digest=$(docker buildx imagetools inspect "$GHCR_IMAGE:sha-${GITHUB_SHA::7}${SUFFIX}" --format '{{json .Manifest}}' | jq -r .digest)
+          docker buildx imagetools inspect "$GHCR_IMAGE:sha-${GITHUB_SHA::7}"
+          digest=$(docker buildx imagetools inspect "$GHCR_IMAGE:sha-${GITHUB_SHA::7}" --format '{{json .Manifest}}' | jq -r .digest)
           echo "digest=$digest" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Sign images with cosign (keyless)
+      - name: Sign the image with cosign (keyless)
         shell: bash
         env:
-          IMAGES: ${{ steps.images.outputs.list }}
           DIGEST: ${{ steps.digest.outputs.digest }}
-        run: |
-          set -euo pipefail
-          while read -r img; do
-            [ -n "$img" ] && cosign sign --yes "$img@$DIGEST"
-          done <<<"$IMAGES"
+        run: cosign sign --yes "$GHCR_IMAGE@$DIGEST"
 
       - name: GitHub build provenance attestation (GHCR)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -428,47 +341,10 @@ jobs:
           DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
           {
-            echo "### Published ${{ matrix.variant }}"
+            echo "### Published"
             echo "Digest: \`$DIGEST\`"
             jq -r '.tags[] | "- `" + . + "`"' <<<"$TAGS_JSON"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  parity:
-    name: Registry parity
-    needs: [resolve, publish]
-    if: needs.resolve.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-      BUILD_TAG: ${{ needs.resolve.outputs.build_tag }}${{ github.run_attempt > 1 && format('.{0}', github.run_attempt) || '' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-
-      - name: Check digests and signatures on each registry
-        shell: bash
-        env:
-          DH_NS: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
-          QUAY_NS: ${{ vars.QUAY_NAMESPACE || secrets.QUAY_USERNAME }}
-        run: |
-          set -euo pipefail
-          # Use the same registry list as the publish job.
-          images="$GHCR_IMAGE"
-          if [ -n "$DOCKERHUB_USERNAME" ]; then images="$images docker.io/$DH_NS/$IMAGE_NAME"; fi
-          if [ -n "$QUAY_USERNAME" ]; then images="$images quay.io/$QUAY_NS/$IMAGE_NAME"; fi
-          export PARITY_IMAGES="$images"
-          ./scripts/check-registry-parity.sh \
-            "$BUILD_TAG" "$BUILD_TAG-debian" "$BUILD_TAG-distroless" \
-            latest debian distroless | tee parity.txt
-          { echo "### Registry parity"; echo '```'; cat parity.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: GitHub release notes
@@ -483,68 +359,25 @@ jobs:
       VERSION: ${{ needs.resolve.outputs.version }}
       BUILD_TAG: ${{ needs.resolve.outputs.build_tag }}${{ github.run_attempt > 1 && format('.{0}', github.run_attempt) || '' }}
       CREATED: ${{ needs.resolve.outputs.created }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
       RPM_AMD64: ${{ needs.resolve.outputs.rpm_sha_amd64 }}
       RPM_ARM64: ${{ needs.resolve.outputs.rpm_sha_arm64 }}
-      DEB_AMD64: ${{ needs.resolve.outputs.deb_sha_amd64 }}
-      DEB_ARM64: ${{ needs.resolve.outputs.deb_sha_arm64 }}
     steps:
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
       - name: Write release notes
         shell: bash
         run: |
           set -euo pipefail
-          digest() { docker buildx imagetools inspect "$GHCR_IMAGE:$1" --format '{{json .Manifest}}' | jq -r .digest; }
-          d_al=$(digest "$BUILD_TAG"); d_deb=$(digest "$BUILD_TAG-debian"); d_dl=$(digest "$BUILD_TAG-distroless")
           v="${UPSTREAM%.*}-${UPSTREAM##*.}"
-          upstream_url="https://github.com/aws/aws-emulator/releases/tag/v$VERSION"
-          upstream_notes=$(gh api "repos/aws/aws-emulator/releases/tags/v$VERSION" -q .body 2>/dev/null || true)
-          n_changes=$(grep -c '^- ' <<<"$upstream_notes" || true)
           {
-            echo "AWS Emulator **$UPSTREAM** (emulator \`$VERSION\`), built $CREATED."
+            echo "AWS Emulator **$UPSTREAM** (emulator \`$VERSION\`), built $CREATED for \`linux/amd64\` and \`linux/arm64\`."
             echo
-            echo "### Pull"
-            echo
-            echo "Each image is on three registries, for \`linux/amd64\` and \`linux/arm64\`."
-            echo
-            for variant in "Amazon Linux (default)|" "Debian|-debian" "Distroless|-distroless"; do
-              name="${variant%%|*}"; suffix="${variant#*|}"
-              echo "$name:"
-              echo
-              echo '```sh'
-              for registry in ghcr.io docker.io quay.io; do
-                echo "docker pull $registry/xsavikx/aws-emulator:$UPSTREAM$suffix"
-              done
-              echo '```'
-              echo
-            done
             echo "### Pin"
             echo
-            echo "The build tag never moves. The digest is the same on all three registries."
+            echo "The build tag \`$BUILD_TAG\` never moves."
             echo
             echo '```sh'
-            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_al   # Amazon Linux"
-            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_deb   # Debian"
-            echo "docker pull ghcr.io/xsavikx/aws-emulator@$d_dl   # Distroless"
+            echo "docker pull $GHCR_IMAGE:$UPSTREAM@$DIGEST"
             echo '```'
-            echo
-            echo "| Variant | Build tag | Digest |"
-            echo "|---|---|---|"
-            echo "| Amazon Linux | \`$BUILD_TAG\` | \`$d_al\` |"
-            echo "| Debian | \`$BUILD_TAG-debian\` | \`$d_deb\` |"
-            echo "| Distroless | \`$BUILD_TAG-distroless\` | \`$d_dl\` |"
-            echo
-            echo "### Upstream changes"
-            echo
-            if [ -n "$upstream_notes" ]; then
-              echo "$n_changes changes in [aws-emulator v$VERSION]($upstream_url). The first 15:"
-              echo
-              grep '^- ' <<<"$upstream_notes" | head -15 || true
-              echo
-              echo "[All upstream release notes]($upstream_url)"
-            else
-              echo "See [aws/aws-emulator releases](https://github.com/aws/aws-emulator/releases)."
-            fi
             echo
             echo "### Verified upstream packages"
             echo
@@ -552,16 +385,14 @@ jobs:
             echo "|---|---|"
             echo "| \`aws-emulator-$v-x86_64.rpm\` | \`$RPM_AMD64\` |"
             echo "| \`aws-emulator-$v-aarch64.rpm\` | \`$RPM_ARM64\` |"
-            echo "| \`aws-emulator_${v}_amd64.deb\` | \`$DEB_AMD64\` |"
-            echo "| \`aws-emulator_${v}_arm64.deb\` | \`$DEB_ARM64\` |"
             echo
             echo "Signatures were checked against the AWS package signing key \`98BC F336 A3BE 53B7 34E9 67C5 2E5B F49B D940 F624\`."
             echo
             echo "### Verify"
             echo
             echo '```sh'
-            echo "cosign verify ghcr.io/xsavikx/aws-emulator@$d_al \\"
-            echo "  --certificate-identity 'https://github.com/xSAVIKx/aws-emulator-docker/.github/workflows/release.yml@refs/heads/main' \\"
+            echo "cosign verify $GHCR_IMAGE@$DIGEST \\"
+            echo "  --certificate-identity 'https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
             echo '```'
           } > notes.md
@@ -578,22 +409,3 @@ jobs:
             gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --title "AWS Emulator $UPSTREAM" --notes-file notes.md --latest
           fi
-
-  examples:
-    name: Examples with the new image
-    needs: [resolve, publish]
-    if: needs.resolve.outputs.publish == 'true'
-    uses: ./.github/workflows/examples.yml
-    with:
-      image: ghcr.io/xsavikx/aws-emulator:${{ needs.resolve.outputs.upstream_version }}
-      full: true
-
-  pages:
-    name: Update the website
-    needs: [resolve, release]
-    if: needs.resolve.outputs.publish == 'true'
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/pages.yml

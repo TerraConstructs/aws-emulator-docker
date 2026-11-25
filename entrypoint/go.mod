@@ -1,4 +1,4 @@
-module github.com/xSAVIKx/aws-emulator-docker/entrypoint
+module github.com/TerraConstructs/aws-emulator-docker/entrypoint
 
 go 1.27
 

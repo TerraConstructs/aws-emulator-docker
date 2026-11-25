@@ -1,7 +1,7 @@
 // Command healthcheck calls the AWS Emulator health route on 127.0.0.1.
 //
-// The distroless image has no shell and no curl, so the Docker HEALTHCHECK
-// uses this small static program instead of healthcheck.sh. It reads the
+// The image HEALTHCHECK normally uses healthcheck.sh; this small static
+// program is a shell-less alternative (no shell and no curl needed). It reads the
 // port from EMULATOR_HEALTHCHECK_PORT (default 9297) and exits with 0 when
 // the route returns HTTP 200.
 //

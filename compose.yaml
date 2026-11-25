@@ -5,7 +5,7 @@
 #   UID_GID=0:0 docker compose up
 services:
   aws-emulator:
-    image: ghcr.io/xsavikx/aws-emulator:latest
+    image: ghcr.io/terraconstructs/aws-emulator:latest
     command: ["-p", "9297"]
     user: "${UID_GID:-1000:1000}"
     environment:

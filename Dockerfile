@@ -79,13 +79,12 @@ ARG BASE_IMAGE
 
 # Static Open Container Initiative labels. CI adds or overrides the dynamic
 # labels (version, created, revision, base.digest).
-LABEL org.opencontainers.image.title="AWS Emulator" \
-      org.opencontainers.image.description="Multi-arch container image of the AWS Emulator, a local emulator of the AWS APIs. Unofficial community build." \
-      org.opencontainers.image.authors="Yurii Serhiichuk <yurii@serhiichuk.dev>" \
-      org.opencontainers.image.vendor="Yurii Serhiichuk" \
-      org.opencontainers.image.url="https://github.com/xSAVIKx/aws-emulator-docker" \
-      org.opencontainers.image.source="https://github.com/xSAVIKx/aws-emulator-docker" \
-      org.opencontainers.image.documentation="https://github.com/xSAVIKx/aws-emulator-docker#readme" \
+LABEL org.opencontainers.image.title="AWS Emulator (TerraConstructs)" \
+      org.opencontainers.image.description="Multi-arch container image of the AWS Emulator for TerraConstructs integration tests. Based on xSAVIKx/aws-emulator-docker. Unofficial build." \
+      org.opencontainers.image.vendor="TerraConstructs" \
+      org.opencontainers.image.url="https://github.com/TerraConstructs/aws-emulator-docker" \
+      org.opencontainers.image.source="https://github.com/TerraConstructs/aws-emulator-docker" \
+      org.opencontainers.image.documentation="https://github.com/TerraConstructs/aws-emulator-docker#readme" \
       org.opencontainers.image.licenses="Apache-2.0 AND CC0-1.0" \
       org.opencontainers.image.base.name="${BASE_IMAGE}"
 
